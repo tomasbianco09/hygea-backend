@@ -3,23 +3,24 @@ from flask_cors import CORS
 from flask import request
 import mysql.connector
 from mysql.connector import Error
+import os  # <--- Fundamental para leer las variables de entorno de Railway
 
 app = Flask(__name__)
-# Permitimos que React (que usualmente corre en el puerto 5173) acceda a los datos
-CORS(app, resources={r"/api/*": {"origins": "http://localhost:5173"}})
-
-# Configuración de conexión basada en tu archivo sql_hygeanexusV3.sql
-db_config = {
-    'host': 'localhost',
-    'user': 'root',           
-    'password': 'e5wxTEw$@bUY5J',
-    'database': 'hygeia_nexus_fund'
-}
+# Permitimos que React acceda a los datos
+CORS(app, resources={r"/api/*": {"origins": "*"}}) # Al usar "*" permitimos que lea tanto local como desde Vercel/Netlify en producción
 
 def obtener_conexion_db():
-    """Establece y devuelve la conexión a la base de datos."""
+    """Establece y devuelve la conexión a la base de datos de forma dinámica."""
     try:
-        conexion = mysql.connector.connect(**db_config)
+        # Si os.environ.get encuentra la variable en Railway, la usa.
+        # Si no la encuentra (en tu PC), cae automáticamente en tus datos locales de la derecha.
+        conexion = mysql.connector.connect(
+            host=os.environ.get('DB_HOST', 'localhost'),
+            user=os.environ.get('DB_USER', 'root'),
+            password=os.environ.get('DB_PASSWORD', 'e5wxTEw$@bUY5J'),  # <--- Tu clave local
+            database=os.environ.get('DB_NAME', 'hygeia_nexus_fund'),  # <--- Tu BD local
+            port=int(os.environ.get('DB_PORT', 3306))  # <--- Puerto 3306 interno de Railway o local
+        )
         if conexion.is_connected():
             return conexion
     except Error as e:
@@ -33,9 +34,7 @@ def listar_medicamentos():
         return jsonify({'error': 'No se pudo conectar a la base de datos'}), 500
     
     try:
-        cursor = conexion.cursor(dictionary=True) # dictionary=True nos devuelve formato JSON listo para React
-        
-        # Consulta para traer medicamentos y acoplar el nombre del laboratorio como en tu interfaz
+        cursor = conexion.cursor(dictionary=True)
         query = """
             SELECT m.medicamento_id, m.nombre_comercial, m.precio_venta, 
                    m.requiere_receta, m.stock_actual, l.nombre_laboratorio as laboratorio
@@ -44,9 +43,7 @@ def listar_medicamentos():
         """
         cursor.execute(query)
         medicamentos = cursor.fetchall()
-        
         return jsonify(medicamentos), 200
-        
     except Error as e:
         return jsonify({'error': f'Error al ejecutar la consulta: {e}'}), 500
     finally:
@@ -64,22 +61,19 @@ def agregar_lote():
         datos = request.json
         codigo_lote = datos.get('codigo_lote')
         medicamento_id = datos.get('medicamento_id')
-        fecha_vencimiento = datos.get('fecha_vencimiento') # Recibe 'YYYY-MM-DD'
+        fecha_vencimiento = datos.get('fecha_vencimiento')
         cantidad_stock = datos.get('cantidad_stock')
         
         if not codigo_lote or not medicamento_id or not fecha_vencimiento or cantidad_stock is None:
             return jsonify({'error': 'Todos los campos son obligatorios'}), 400
             
         cursor = conexion.cursor()
-        
-        # 1. Insertamos el lote físico en la tabla 'lote'
         query_lote = """
             INSERT INTO lote (codigo_lote, medicamento_id, fecha_vencimiento, cantidad_stock, estado_lote)
             VALUES (%s, %s, %s, %s, 'OK')
         """
         cursor.execute(query_lote, (codigo_lote, medicamento_id, fecha_vencimiento, cantidad_stock))
         
-        # 2. Actualizamos el stock general en la tabla 'medicamento' sumando las nuevas unidades
         query_update_stock = """
             UPDATE medicamento 
             SET stock_actual = stock_actual + %s 
@@ -87,10 +81,9 @@ def agregar_lote():
         """
         cursor.execute(query_update_stock, (cantidad_stock, medicamento_id))
         
-        conexion.commit() # Impactamos ambos cambios de forma atómica
+        conexion.commit()
         cursor.close()
         return jsonify({'status': 'success', 'message': 'Lote registrado e inventario actualizado'}), 201
-        
     except Error as e:
         return jsonify({'error': f'Error en la consistencia de datos: {e}'}), 500
     finally:
@@ -105,14 +98,10 @@ def listar_proveedores():
     
     try:
         cursor = conexion.cursor(dictionary=True)
-        
-        # Agregamos las nuevas columnas a la consulta SQL
         query = "SELECT proveedor_id, nombre_proveedor, mail_proveedor, tel_proveedor FROM proveedor"
         cursor.execute(query)
         proveedores = cursor.fetchall()
-        
         return jsonify(proveedores), 200
-        
     except Error as e:
         return jsonify({'error': f'Error al ejecutar la consulta: {e}'}), 500
     finally:
@@ -127,31 +116,24 @@ def agregar_proveedor():
         return jsonify({'error': 'No se pudo conectar a la base de datos'}), 500
     
     try:
-        # Recibimos los datos en formato JSON enviados desde el formulario de React
         datos = request.json
-        
         id_prov = datos.get('proveedor_id')
         nombre = datos.get('nombre_proveedor')
         mail = datos.get('mail_proveedor')
         tel = datos.get('tel_proveedor')
         
-        # Validación básica de campos obligatorios
         if not id_prov or not nombre or not mail or not tel:
             return jsonify({'error': 'Todos los campos son obligatorios'}), 400
             
         cursor = conexion.cursor()
-        
-        # Ejecutamos el INSERT real en tu MySQL
         query = """
             INSERT INTO proveedor (proveedor_id, nombre_proveedor, mail_proveedor, tel_proveedor)
             VALUES (%s, %s, %s, %s)
         """
         cursor.execute(query, (id_prov, nombre, mail, tel))
-        conexion.commit() # ¡Clave! Guarda los cambios permanentemente en la base de datos
-        
+        conexion.commit()
         cursor.close()
         return jsonify({'status': 'success', 'message': 'Proveedor registrado con éxito'}), 201
-        
     except Error as e:
         return jsonify({'error': f'Error en la base de datos: {e}'}), 500
     finally:
@@ -166,18 +148,13 @@ def eliminar_proveedor(id_prov):
     
     try:
         cursor = conexion.cursor()
-        
-        # Ejecutamos el DELETE usando el ID que viene en la URL
         query = "DELETE FROM proveedor WHERE proveedor_id = %s"
         cursor.execute(query, (id_prov,))
-        conexion.commit() # Guardamos los cambios en MySQL
-        
+        conexion.commit()
         cursor.close()
         return jsonify({'status': 'success', 'message': f'Proveedor #{id_prov} eliminado'}), 200
-        
     except Error as e:
-        # Si salta un error de clave foránea (por ejemplo, si el proveedor ya está en un encargo de pedido)
-        return jsonify({'error': f'No se puede eliminar el proveedor. Está asociado a un pedido activo: {e}'}), 400
+        return jsonify({'error': f'No se puede eliminar el proveedor: {e}'}), 400
     finally:
         if conexion.is_connected():
             conexion.close()
@@ -190,8 +167,6 @@ def listar_ventas():
     
     try:
         cursor = conexion.cursor(dictionary=True)
-        
-        # Cruzamos las ventas con los nombres de clientes y obras sociales reales de tu BD
         query = """
             SELECT v.venta_id as factura, 
                    DATE_FORMAT(v.fecha_venta, '%d/%m/%Y') as fecha, 
@@ -206,9 +181,7 @@ def listar_ventas():
         """
         cursor.execute(query)
         ventas = cursor.fetchall()
-        
         return jsonify(ventas), 200
-        
     except Error as e:
         return jsonify({'error': f'Error al ejecutar la consulta: {e}'}), 500
     finally:
@@ -223,7 +196,6 @@ def listar_clientes():
         return jsonify({'error': 'No se pudo conectar a la base de datos'}), 500
     try:
         cursor = conexion.cursor(dictionary=True)
-        # Traemos los clientes y acoplamos el nombre de su obra social si tiene
         query = """
             SELECT c.cliente_id, c.nombre, c.dni, c.cliente_frecuente, 
                    IFNULL(o.nombre_obra_social, 'Particular') as obra_social,
@@ -250,25 +222,22 @@ def registrar_nueva_venta():
     try:
         datos = request.json
         venta_id = datos.get('venta_id')
-        cliente_id = datos.get('cliente_id') # Puede ser None (Consumidor Final)
-        obra_social_id = datos.get('obra_social_id') # Puede ser None
+        cliente_id = datos.get('cliente_id')
+        obra_social_id = datos.get('obra_social_id')
         metodo_pago = datos.get('metodo_pago')
         total = datos.get('total')
-        carrito = datos.get('carrito') # Lista de diccionarios: [{medicamento_id, cantidad, precio_unitario, receta_id}]
+        carrito = datos.get('carrito')
         
         if not venta_id or not metodo_pago or not carrito:
             return jsonify({'error': 'Faltan datos críticos para procesar la transacción'}), 400
             
         cursor = conexion.cursor()
-        
-        # 1. Insertar la cabecera de la venta (Clase Venta -> registrarVenta)
         query_venta = """
             INSERT INTO venta (venta_id, fecha_venta, total, metodo_pago, obra_social_id, cliente_id, sucursal_id)
-            VALUES (%s, CURDATE(), %s, %s, %s, %s, 1) -- Asumimos Sucursal 1 (Centro) activa
+            VALUES (%s, CURDATE(), %s, %s, %s, %s, 1)
         """
         cursor.execute(query_venta, (venta_id, total, metodo_pago, obra_social_id, cliente_id))
         
-        # 2. Insertar los renglones del detalle y descontar el stock (Clase Medicamento -> actualizarStockActual)
         query_detalle = """
             INSERT INTO detalle_venta (detalle_id, venta_id, medicamento_id, cantidad, precio_unitario, receta_id)
             VALUES (%s, %s, %s, %s, %s, %s)
@@ -280,22 +249,18 @@ def registrar_nueva_venta():
         """
         
         for idx, item in enumerate(carrito):
-            # Generamos un ID de detalle combinando el ID de venta y el índice del renglón
             detalle_id = int(f"{venta_id}{idx}")
             med_id = item.get('medicamento_id')
             cant = item.get('cantidad')
             precio = item.get('precio_unitario')
             receta_id = item.get('receta_id') if item.get('receta_id') != "" else None
             
-            # Insertamos el renglón de auditoría médica
             cursor.execute(query_detalle, (detalle_id, venta_id, med_id, cant, precio, receta_id))
-            # Descontamos las existencias físicas del mostrador
             cursor.execute(query_descontar_stock, (cant, med_id))
             
-        conexion.commit() # Confirmación de la transacción atómica
+        conexion.commit()
         cursor.close()
         return jsonify({'status': 'success', 'message': 'Factura emitida e inventario actualizado con éxito'}), 201
-        
     except Error as e:
         return jsonify({'error': f'Fallo transaccional en MySQL: {e}'}), 500
     finally:
@@ -331,24 +296,20 @@ def agregar_cliente():
         nombre = datos.get('nombre')
         dni = datos.get('dni')
         cliente_frecuente = datos.get('cliente_frecuente', False)
-        obra_social_id = datos.get('obra_social_id') # Puede ser None si es Particular
+        obra_social_id = datos.get('obra_social_id')
         
         if not cliente_id or not nombre or not dni:
             return jsonify({'error': 'ID, Nombre y DNI son campos obligatorios'}), 400
             
         cursor = conexion.cursor()
-        
-        # Insert transaccional de la Clase Cliente (registrarCliente)
         query = """
             INSERT INTO cliente (cliente_id, nombre, dni, cliente_frecuente, obra_social_id)
             VALUES (%s, %s, %s, %s, %s)
         """
         cursor.execute(query, (cliente_id, nombre, dni, cliente_frecuente, obra_social_id))
         conexion.commit()
-        
         cursor.close()
         return jsonify({'status': 'success', 'message': 'Cliente registrado de forma reglamentaria'}), 201
-        
     except Error as e:
         return jsonify({'error': f'Error de duplicación o clave en MySQL: {e}'}), 500
     finally:
@@ -363,8 +324,6 @@ def listar_recetas():
     
     try:
         cursor = conexion.cursor(dictionary=True)
-        
-        # Agregamos MAX(m.requiere_receta) para saber si alguno de los medicamentos de la receta la exige
         query = """
             SELECT r.receta_id as id,
                    r.medico_matricula,
@@ -397,13 +356,11 @@ def listar_recetas():
                 'paciente': r['paciente'],
                 'fecha': r['fecha_limite'],
                 'obra_social': r['obra_social'],
-                # 🛡️ ¡LÓGICA REAL DE BD! Si exige_receta es 1, entonces es controlado
                 'psicotropico': bool(r['exige_receta']), 
                 'medicamentos': r['medicamentos_asociados'].split(', ')
             })
             
         return jsonify(recetas_formateadas), 200
-        
     except Error as e:
         return jsonify({'error': str(e)}), 500
     finally:
@@ -421,26 +378,22 @@ def agregar_receta():
         datos = request.json
         receta_id = datos.get('receta_id')
         medico_matricula = datos.get('medico_matricula')
-        validez_hasta = datos.get('validez_hasta') # Recibe 'YYYY-MM-DD'
+        validez_hasta = datos.get('validez_hasta')
         cliente_id = datos.get('cliente_id')
-        obra_social_id = datos.get('obra_social_id') # Puede ser None
+        obra_social_id = datos.get('obra_social_id')
         
         if not receta_id or not medico_matricula or not validez_hasta or not cliente_id:
             return jsonify({'error': 'Faltan campos obligatorios para registrar la receta'}), 400
             
         cursor = conexion.cursor()
-        
-        # Inserción reglamentaria en la tabla receta_medica
         query = """
             INSERT INTO receta_medica (receta_id, medico_matricula, validez_hasta, cliente_id, obra_social_id)
             VALUES (%s, %s, %s, %s, %s)
         """
         cursor.execute(query, (receta_id, medico_matricula, validez_hasta, cliente_id, obra_social_id))
         conexion.commit()
-        
         cursor.close()
         return jsonify({'status': 'success', 'message': 'Receta archivada en el sistema'}), 201
-        
     except Error as e:
         return jsonify({'error': f'Error de duplicación o integridad en MySQL: {e}'}), 500
     finally:
@@ -455,8 +408,6 @@ def reporte_mas_vendidos():
     
     try:
         cursor = conexion.cursor(dictionary=True)
-        
-        # Agrupamos por medicamento y sumamos las cantidades vendidas e ingresos totales
         query = """
             SELECT m.nombre_comercial as producto, 
                    cat.nombre_categoria as categoria, 
@@ -488,8 +439,6 @@ def reporte_categorias():
     
     try:
         cursor = conexion.cursor(dictionary=True)
-        
-        # Sumamos la cantidad de productos vendidos por cada categoría
         query = """
             SELECT cat.nombre_categoria as categoria, 
                    SUM(dv.cantidad) as total_vendido
@@ -509,9 +458,6 @@ def reporte_categorias():
             cursor.close()
             conexion.close()
 
-            
-import os
 if __name__ == '__main__':
-    # Railway nos da el puerto dinámicamente en la variable PORT. Si no existe, usa el 5000.
     puerto = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=puerto)
