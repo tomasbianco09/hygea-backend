@@ -4,6 +4,10 @@ from flask import request
 import mysql.connector
 from mysql.connector import Error
 import os  # <--- Fundamental para leer las variables de entorno de Railway
+from dotenv import load_dotenv
+
+load_dotenv()  # Carga las variables desde un archivo .env local si existe.
+               # En Railway no hace nada (no hay .env ahí), las variables ya están seteadas en el dashboard.
 
 app = Flask(__name__)
 # Permitimos que React acceda a los datos
@@ -12,14 +16,16 @@ CORS(app, resources={r"/api/*": {"origins": "*"}}) # Al usar "*" permitimos que 
 def obtener_conexion_db():
     """Establece y devuelve la conexión a la base de datos de forma dinámica."""
     try:
-        # Si os.environ.get encuentra la variable en Railway, la usa.
-        # Si no la encuentra (en tu PC), cae automáticamente en tus datos locales de la derecha.
+        # Lee host/usuario/base/puerto de las variables de entorno (.env local o Railway),
+        # con valores por defecto solo para los datos NO sensibles.
+        # La contraseña ya no tiene un valor por defecto: si falta, falla explícitamente
+        # en vez de exponer una clave real en el código fuente.
         conexion = mysql.connector.connect(
             host=os.environ.get('DB_HOST', 'localhost'),
             user=os.environ.get('DB_USER', 'root'),
-            password=os.environ.get('DB_PASSWORD', 'e5wxTEw$@bUY5J'),  # <--- Tu clave local
-            database=os.environ.get('DB_NAME', 'hygeia_nexus_fund'),  # <--- Tu BD local
-            port=int(os.environ.get('DB_PORT', 3306))  # <--- Puerto 3306 interno de Railway o local
+            password=os.environ.get('DB_PASSWORD'),
+            database=os.environ.get('DB_NAME', 'hygeia_nexus_fund'),
+            port=int(os.environ.get('DB_PORT', 3306))
         )
         if conexion.is_connected():
             return conexion
@@ -457,6 +463,44 @@ def reporte_categorias():
         if conexion.is_connected():
             cursor.close()
             conexion.close()
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    datos = request.get_json()
+    username = datos.get('username')
+    password = datos.get('password')
+
+    if not username or not password:
+        return jsonify({'error': 'Por favor, complete todos los campos'}), 400
+
+    conexion = obtener_conexion_db()
+    if conexion is None:
+        return jsonify({'error': 'No se pudo conectar a la base de datos'}), 500
+
+    cursor = conexion.cursor(dictionary=True)
+    try:
+        query = "SELECT * FROM usuario WHERE username = %s AND password = %s AND activo = TRUE"
+        cursor.execute(query, (username, password))
+        usuario = cursor.fetchone()
+
+        if usuario:
+            return jsonify({
+                'mensaje': 'Autenticación exitosa',
+                'usuario': {
+                    'username': usuario['username'],
+                    'nombre': usuario['nombre_completo']
+                }
+            }), 200
+        else:
+            return jsonify({'error': 'Credenciales incorrectas o usuario inactivo'}), 401
+
+    except mysql.connector.Error as err:
+        print(f"Error SQL: {err}")
+        return jsonify({'error': 'Error interno del servidor de base de datos'}), 500
+    finally:
+        cursor.close()
+        conexion.close()
+
 
 if __name__ == '__main__':
     puerto = int(os.environ.get("PORT", 5000))
